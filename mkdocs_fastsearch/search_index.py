@@ -1,81 +1,69 @@
-# coding: utf-8
+from __future__ import annotations
 
-from __future__ import unicode_literals
-
+import json
+import logging
 import os
 import re
-import json
-import jieba # 中文分词用模块
-import logging
 import subprocess
-from mkdocs import utils
+from html.parser import HTMLParser
+from typing import List, Optional, Tuple
 
-try:                                    # pragma: no cover
-    from html.parser import HTMLParser  # noqa
-except ImportError:                     # pragma: no cover
-    from HTMLParser import HTMLParser   # noqa
+from mkdocs.structure.pages import Page
+from mkdocs.structure.toc import AnchorLink, TableOfContents
+
+try:
+    from lunr import lunr
+
+    haslunrpy = True
+except ImportError:
+    haslunrpy = False
 
 log = logging.getLogger(__name__)
 
 
-class SearchIndex(object):
+class SearchIndex:
     """
     Search index is a collection of pages and sections (heading
     tags and their following content are sections).
     """
 
-    def __init__(self, **config):
-        self._entries = []
+    def __init__(self, **config) -> None:
+        self._entries: List[dict] = []
         self.config = config
-        print(self.config)
 
-    def _find_toc_by_id(self, toc, id_):
+    def _find_toc_by_id(self, toc, id_: Optional[str]) -> Optional[AnchorLink]:
         """
         Given a table of contents and HTML ID, iterate through
         and return the matched item in the TOC.
         """
         for toc_item in toc:
-            if toc_item.url[1:] == id_:
+            if toc_item.id == id_:
                 return toc_item
             toc_item_r = self._find_toc_by_id(toc_item.children, id_)
             if toc_item_r is not None:
                 return toc_item_r
+        return None
 
-    def _add_entry(self, title, text, loc):
+    def _add_entry(self, title: Optional[str], text: str, loc: str) -> None:
         """
-        A simple wrapper to add an entry and ensure the contents
-        is UTF8 encoded.
+        A simple wrapper to add an entry, dropping bad characters.
         """
-        text = text.replace('\u3000', ' ') # 替换中文全角空格
         text = text.replace('\u00a0', ' ')
         text = re.sub(r'[ \t\n\r\f\v]+', ' ', text.strip())
 
-        # 给正文分词
-        text_seg_list = jieba.cut_for_search(text) # 结巴分词，搜索引擎模式，召回率更高
-        text = " ".join(text_seg_list) # 用空格连接词语
+        self._entries.append({'title': title, 'text': text, 'location': loc})
 
-        # 给标题分词
-        title_seg_list = jieba.cut(title, cut_all=False) # 结巴分词，精确模式，更可读
-        title = " ".join(title_seg_list) # 用空格连接词语
-
-        self._entries.append({
-            'title': title,
-            'text': str(text.encode('utf-8'), encoding='utf-8'),
-            'location': loc
-        })
-
-
-    def add_entry_from_context(self, page):
+    def add_entry_from_context(self, page: Page) -> None:
         """
         Create a set of entries in the index for a page. One for
         the page itself and then one for each of its' heading
         tags.
         """
-
         # Create the content parser and feed in the HTML for the
         # full page. This handles all the parsing and prepares
         # us to iterate through it.
         parser = ContentParser()
+        assert page.content is not None
         parser.feed(page.content)
         parser.close()
 
@@ -84,110 +72,95 @@ class SearchIndex(object):
         url = page.url
 
         # Create an entry for the full page.
-        self._add_entry(
-            title=page.title,
-#            text=self.strip_tags(page.content).rstrip('\n'),
-            text='',
-            loc=url
-        )
+        text = parser.stripped_html.rstrip('\n') if self.config['indexing'] == 'full' else ''
+        self._add_entry(title=page.title, text=text, loc=url)
 
-        for section in parser.data:
-            self.create_entry_for_section(section, page.toc, url)
+        if self.config['indexing'] in ['full', 'sections']:
+            for section in parser.data:
+                self.create_entry_for_section(section, page.toc, url)
 
-    def create_entry_for_section(self, section, toc, abs_url):
+    def create_entry_for_section(
+        self, section: ContentSection, toc: TableOfContents, abs_url: str
+    ) -> None:
         """
         Given a section on the page, the table of contents and
         the absolute url for the page create an entry in the
         index
         """
-
         toc_item = self._find_toc_by_id(toc, section.id)
 
+        text = ' '.join(section.text) if self.config['indexing'] == 'full' else ''
         if toc_item is not None:
-            self._add_entry(
-                title=toc_item.title,
-                text=u" ".join(section.text),
-                loc=abs_url + toc_item.url
-            )
+            self._add_entry(title=toc_item.title, text=text, loc=abs_url + toc_item.url)
 
-    def generate_search_index(self):
+    def generate_search_index(self) -> str:
         """python to json conversion"""
-        page_dicts = {
-            'docs': self._entries,
-            'config': self.config
-        }
-        data = json.dumps(page_dicts, sort_keys=True, separators=(',', ':'))
+        page_dicts = {'docs': self._entries, 'config': self.config}
+        data = json.dumps(page_dicts, sort_keys=True, separators=(',', ':'), default=str)
 
-        if self.config['prebuild_index']:
+        if self.config['prebuild_index'] in (True, 'node'):
             try:
-                script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prebuild-index.js')
+                script_path = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), 'prebuild-index.js'
+                )
                 p = subprocess.Popen(
                     ['node', script_path],
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
+                    stderr=subprocess.PIPE,
+                    encoding='utf-8',
                 )
-                idx, err = p.communicate(data.encode('utf-8'))
+                idx, err = p.communicate(data)
                 if not err:
-                    idx = idx.decode('utf-8') if hasattr(idx, 'decode') else idx
                     page_dicts['index'] = json.loads(idx)
                     data = json.dumps(page_dicts, sort_keys=True, separators=(',', ':'))
                     log.debug('Pre-built search index created successfully.')
                 else:
-                    log.warning('Failed to pre-build search index. Error: {}'.format(err))
-            except (OSError, IOError, ValueError) as e:
-                log.warning('Failed to pre-build search index. Error: {}'.format(e))
+                    log.warning(f'Failed to pre-build search index. Error: {err}')
+            except (OSError, ValueError) as e:
+                log.warning(f'Failed to pre-build search index. Error: {e}')
+        elif self.config['prebuild_index'] == 'python':
+            if haslunrpy:
+                lunr_idx = lunr(
+                    ref='location',
+                    fields=('title', 'text'),
+                    documents=self._entries,
+                    languages=self.config['lang'],
+                )
+                page_dicts['index'] = lunr_idx.serialize()
+                data = json.dumps(page_dicts, sort_keys=True, separators=(',', ':'))
+            else:
+                log.warning(
+                    "Failed to pre-build search index. The 'python' method was specified; "
+                    "however, the 'lunr.py' library does not appear to be installed. Try "
+                    "installing it with 'pip install lunr'. If you are using any language "
+                    "other than English you will also need to install 'lunr[languages]'."
+                )
 
         return data
 
-    def strip_tags(self, html):
-        """strip html tags from data"""
-        s = HTMLStripper()
-        s.feed(html)
-        return s.get_data()
 
-
-class HTMLStripper(HTMLParser):
-    """
-    A simple HTML parser that stores all of the data within tags
-    but ignores the tags themselves and thus strips them from the
-    content.
-    """
-
-    def __init__(self, *args, **kwargs):
-        # HTMLParser is a old-style class in Python 2, so
-        # super() wont work here.
-        HTMLParser.__init__(self, *args, **kwargs)
-
-        self.data = []
-
-    def handle_data(self, d):
-        """
-        Called for the text contents of each tag.
-        """
-        self.data.append(d)
-
-    def get_data(self):
-        return '\n'.join(self.data)
-
-
-class ContentSection(object):
+class ContentSection:
     """
     Used by the ContentParser class to capture the information we
     need when it is parsing the HMTL.
     """
 
-    def __init__(self, text=None, id_=None, title=None):
+    def __init__(
+        self,
+        text: Optional[List[str]] = None,
+        id_: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> None:
         self.text = text or []
         self.id = id_
         self.title = title
 
     def __eq__(self, other):
-        return all([
-            self.text == other.text,
-            self.id == other.id,
-            self.title == other.title
-        ])
+        return self.text == other.text and self.id == other.id and self.title == other.title
+
+
+_HEADER_TAGS = tuple(f"h{x}" for x in range(1, 7))
 
 
 class ContentParser(HTMLParser):
@@ -197,27 +170,19 @@ class ContentParser(HTMLParser):
     for that section.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
 
-        # HTMLParser is a old-style class in Python 2, so
-        # super() wont work here.
-        HTMLParser.__init__(self, *args, **kwargs)
-
-        self.data = []
-        self.section = None
+        self.data: List[ContentSection] = []
+        self.section: Optional[ContentSection] = None
         self.is_header_tag = False
-        self.open_excluded = []
-        self.exclude = ['pre', 'table', 'style']
+        self._stripped_html: List[str] = []
 
-    def handle_starttag(self, tag, attrs):
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
         """Called at the start of every HTML tag."""
 
-        if tag in self.exclude:
-            if not tag in self.open_excluded:
-                self.open_excluded.append(tag)
-
         # We only care about the opening tag for headings.
-        if tag not in (["h%d" % x for x in range(1, 7)]):
+        if tag not in _HEADER_TAGS:
             return
 
         # We are dealing with a new header, create a new section
@@ -230,22 +195,20 @@ class ContentParser(HTMLParser):
             if attr[0] == "id":
                 self.section.id = attr[1]
 
-    def handle_endtag(self, tag):
+    def handle_endtag(self, tag: str) -> None:
         """Called at the end of every HTML tag."""
-        
-        if tag in self.open_excluded:
-            self.open_excluded.remove(tag)
 
         # We only care about the opening tag for headings.
-        if tag not in (["h%d" % x for x in range(1, 7)]):
+        if tag not in _HEADER_TAGS:
             return
 
         self.is_header_tag = False
 
-    def handle_data(self, data):
+    def handle_data(self, data: str) -> None:
         """
         Called for the text contents of each tag.
         """
+        self._stripped_html.append(data)
 
         if self.section is None:
             # This means we have some content at the start of the
@@ -260,5 +223,8 @@ class ContentParser(HTMLParser):
         if self.is_header_tag:
             self.section.title = data
         else:
-            if len(self.open_excluded)==0:
-                self.section.text.append(data.rstrip('\n'))
+            self.section.text.append(data.rstrip('\n'))
+
+    @property
+    def stripped_html(self) -> str:
+        return '\n'.join(self._stripped_html)
