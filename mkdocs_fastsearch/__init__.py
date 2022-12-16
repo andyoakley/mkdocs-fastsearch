@@ -7,6 +7,7 @@ import logging
 from mkdocs.plugins import BasePlugin
 from mkdocs.config import config_options
 from .search_index import SearchIndex
+from mkdocs import utils
 
 
 log = logging.getLogger(__name__)
