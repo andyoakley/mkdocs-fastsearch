@@ -3,9 +3,9 @@ from distutils.core import setup
 
 setup(
     name='mkdocs-fastsearch',
-    version='0.1.0',
-    author='Andy Oakley',
-    author_email='ao@ao.vc',
+    version='0.1.1',
+    author='Yinan Qin',
+    author_email='ganyuanzhen@game.com',
     packages=['mkdocs_fastsearch'],
     license='LICENSE.txt',
     description='Mkdocs plugin for faster search. Based on stock search plugin.',
