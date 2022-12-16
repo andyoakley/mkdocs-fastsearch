@@ -4,7 +4,6 @@ from __future__ import absolute_import, unicode_literals
 
 import os
 import logging
-from mkdocs import utils
 from mkdocs.plugins import BasePlugin
 from mkdocs.config import config_options
 from .search_index import SearchIndex
@@ -22,7 +21,7 @@ class LangOption(config_options.OptionallyRequired):
         return os.path.isfile(path)
 
     def run_validation(self, value):
-        if isinstance(value, utils.string_types):
+        if isinstance(value, str):
             value = [value]
         elif not isinstance(value, (list, tuple)):
             raise config_options.ValidationError('Expected a list of language codes.')
@@ -39,7 +38,7 @@ class SearchPlugin(BasePlugin):
 
     config_scheme = (
         ('lang', LangOption(default=['en'])),
-        ('separator', config_options.Type(utils.string_types, default=r'[\s\-]+')),
+        ('separator', config_options.Type(str, default=r'[\s\-]+')),
         ('prebuild_index', config_options.Type(bool, default=False)),
     )
 
