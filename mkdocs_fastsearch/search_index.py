@@ -5,6 +5,7 @@ from __future__ import unicode_literals
 import os
 import re
 import json
+import jieba # 中文分词用模块
 import logging
 import subprocess
 from mkdocs import utils
@@ -45,14 +46,24 @@ class SearchIndex(object):
         A simple wrapper to add an entry and ensure the contents
         is UTF8 encoded.
         """
+        text = text.replace('\u3000', ' ') # 替换中文全角空格
         text = text.replace('\u00a0', ' ')
         text = re.sub(r'[ \t\n\r\f\v]+', ' ', text.strip())
 
+        # 给正文分词
+        text_seg_list = jieba.cut_for_search(text) # 结巴分词，搜索引擎模式，召回率更高
+        text = " ".join(text_seg_list) # 用空格连接词语
+
+        # 给标题分词
+        title_seg_list = jieba.cut(title, cut_all=False) # 结巴分词，精确模式，更可读
+        title = " ".join(title_seg_list) # 用空格连接词语
+
         self._entries.append({
             'title': title,
-            'text': utils.text_type(text.encode('utf-8'), encoding='utf-8'),
+            'text': str(text.encode('utf-8'), encoding='utf-8'),
             'location': loc
         })
+
 
     def add_entry_from_context(self, page):
         """
